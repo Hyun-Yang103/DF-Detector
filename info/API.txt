@@ -1,0 +1,6 @@
+POST /api/detect : 탐지
+GET /api/results : 최근 결과
+GET /api/results/<user> : 특정 사용자
+POST /api/delete_result : 사용자 삭제
+POST /api/admin/delete : 관리자 삭제
+GET /api/heatmap/<fname> : Heatmap 조회

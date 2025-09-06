@@ -1,0 +1,15 @@
+deepfake-detection-service/
+├─ app.py                 # Flask 엔트리포인트 (모든 API)
+├─ detection.py           # 딥페이크 모델 추론 (torch/torchvision optional)
+├─ metrics.py             # PSNR/SSIM, diff/heatmap
+├─ exif_utils.py          # Exif 기반 포토샵 등 보정 프로그램 감지
+├─ db.py                  # MySQL 연동 (원본·결과 저장/조회/삭제)
+├─ config.json            # 임계값 (deepfake, psnr, ssim)
+├─ .env.example           # DB/ADMIN 환경 변수 샘플(DB구조에 맞게 추가해야 함)
+├─ requirements.txt       # 의존성
+├─ schema.sql             # MySQL 테이블 스키마
+├─ README.md              # 문서 (설치/실행/설계/API)
+└─ tests/
+   ├─ test_metrics.py     # PSNR/SSIM 기본 테스트
+   └─ test_exif_utils.py  # Exif 예외 처리 테스트
+   └─ test_metrics.py     # PSNR/SSIM, diff/heatmap 기능 테스트
