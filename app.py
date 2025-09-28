@@ -1,119 +1,84 @@
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify
 from werkzeug.utils import secure_filename
-import os
-import cv2
-import numpy as np
+import os, torch
 from PIL import Image
-from datetime import datetime
-from io import BytesIO
-from dotenv import load_dotenv
 
-from detection import deepfake_model_detect
-from metrics import compute_psnr_ssim, save_diff_heatmap
-from exif_utils import is_photoshop_like
-from db import insert_result, fetch_results, fetch_user_original, save_user_original, delete_result, admin_delete
+from models import xception, efficientnet, vit
+from utils.preprocessing import transform
+from utils.gradcam import generate_gradcam
+from utils.database import insert_history
 
-import json
-
-load_dotenv()
-app = Flask(__name__)
-
+# 폴더 경로
 UPLOAD_FOLDER = "uploads"
-HEATMAP_FOLDER = "heatmap"
+HEATMAP_FOLDER = "static/heatmaps"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(HEATMAP_FOLDER, exist_ok=True)
 
-with open("config.json") as f:
-    CONFIG = json.load(f)
+# 모델 가중치 설정
+WEIGHTS = {"xception": 0.4, "efficientnet": 0.3, "vit": 0.3}
 
-@app.route("/api/detect", methods=["POST"])
+app = Flask(__name__)
+
+@app.route('/api/detect', methods=['POST'])
 def detect():
-    file = request.files["file"]
-    username = request.form.get("username", "guest")
+    file = request.files['file']
+    username = request.form.get('username', 'guest')
     filename = secure_filename(file.filename)
     path = os.path.join(UPLOAD_FOLDER, filename)
     file.save(path)
 
-    img = Image.open(path).convert("RGB")
-    orig_img = fetch_user_original(username)
+    # 이미지 전처리
+    image = Image.open(path).convert('RGB')
+    tensor = transform(image).unsqueeze(0)
 
-    psnr = None
-    ssim = None
-    confidence = None
-    status = None
-    source = None
-    edit_type = "normal"
-    heatmap_path = None
+    # 각 모델 탐지
+    with torch.no_grad():
+        prob_xcep = torch.sigmoid(xception(tensor)).item()
+        prob_eff  = torch.sigmoid(efficientnet(tensor)).item()
+        prob_vit  = torch.sigmoid(vit(tensor)).item()
 
-    if orig_img is not None:
-        orig_np = np.array(Image.open(BytesIO(orig_img)))
-        edited_np = np.array(img)
+    # 가중치 기반 앙상블
+    final_prob = (
+        WEIGHTS["xception"] * prob_xcep +
+        WEIGHTS["efficientnet"] * prob_eff +
+        WEIGHTS["vit"] * prob_vit
+    )
 
-        psnr, ssim = compute_psnr_ssim(orig_np, edited_np)
-        heatmap_path = os.path.join(HEATMAP_FOLDER, f"{filename}_diff.png")
-        save_diff_heatmap(orig_np, edited_np, heatmap_path)
+    label = "Fake" if final_prob > 0.5 else "Real"
+    confidence = round(final_prob, 4) if label == "Fake" else round(1 - final_prob, 4)
 
-        if psnr < CONFIG["psnr_threshold"] or ssim < CONFIG["ssim_threshold"]:
-            status = "Manipulated"
-        else:
-            status = "Normal"
-        source = "psnr_ssim"
+    # Heatmap 생성
+    heatmaps = {}
+    for model_name, model in [("xception", xception), ("efficientnet", efficientnet), ("vit", vit)]:
+        heatmap_path = os.path.join(HEATMAP_FOLDER, f"{filename}_{model_name}_map.png")
+        generate_gradcam(model, tensor, heatmap_path)
+        heatmaps[model_name] = heatmap_path
 
-    else:
-        if is_photoshop_like(img):
-            status = "Normal"
-            edit_type = "photoshop_edit"
-        else:
-            confidence = deepfake_model_detect(img)
-            if confidence > CONFIG["deepfake_threshold"]:
-                status = "Fake"
-            else:
-                status = "Normal"
-                save_user_original(username, img)
+    # 예외 처리 보강
+    warning = ""
+    if confidence < 0.3:
+        warning = "탐지 결과 불확실: 이미지 품질이 낮거나 노이즈가 많습니다."
+    elif 0.3 <= confidence <= 0.7:
+        warning = "주의: 보정된 사진(포토샵, 필터 등)일 수 있습니다."
+    elif confidence > 0.9:
+        warning = "거의 확실한 결과입니다."
 
-        source = "deepfake_model"
-
-    insert_result(username, filename, psnr, ssim, confidence, status, source, edit_type, heatmap_path)
+    # DB 저장
+    insert_history(username, filename, label, confidence)
 
     return jsonify({
-        "username": username,
-        "filename": filename,
-        "psnr": psnr,
-        "ssim": ssim,
-        "confidence": confidence,
-        "status": status,
-        "source": source,
-        "edit_type": edit_type,
-        "visualization": heatmap_path
+        "simple_result": {
+            "prediction": label,
+            "confidence": confidence
+        },
+        "expert_result": {
+            "final_prob": round(final_prob, 4),
+            "model_details": {
+                "xception": round(prob_xcep, 4),
+                "efficientnet": round(prob_eff, 4),
+                "vit": round(prob_vit, 4)
+            },
+            "heatmaps": heatmaps
+        },
+        "warning": warning
     })
-
-@app.route("/api/results", methods=["GET"])
-def get_results():
-    return jsonify(fetch_results())
-
-@app.route("/api/results/<username>", methods=["GET"])
-def get_user_results(username):
-    return jsonify(fetch_results(username))
-
-@app.route("/api/delete_result", methods=["POST"])
-def delete_result_api():
-    rid = request.form.get("result_id")
-    delete_result(rid)
-    return jsonify({"message": "Deleted"})
-
-@app.route("/api/admin/delete", methods=["POST"])
-def admin_delete_api():
-    admin_pw = request.form.get("admin_pw")
-    if admin_pw != os.getenv("ADMIN_PW"):
-        return jsonify({"error": "Unauthorized"}), 403
-    target = request.form.get("target", "all")
-    admin_delete(target)
-    return jsonify({"message": f"Admin deleted {target}"})
-
-@app.route("/api/heatmap/<filename>", methods=["GET"])
-def get_heatmap(filename):
-    path = os.path.join(HEATMAP_FOLDER, filename)
-    return send_file(path, mimetype="image/png")
-
-if __name__ == "__main__":
-    app.run(debug=True)
