@@ -49,7 +49,7 @@ def detect():
     elif 0.3 <= confidence <= 0.7:
         warning = "주의: 보정된 사진(포토샵, 필터 등)일 수 있습니다."
     elif confidence > 0.9:
-        warning = "거의 확실한 결과입니다."
+        warning = "변저 흔적이 없습니다."
 
     # DB 저장
     insert_history(username, filename, label, confidence)
