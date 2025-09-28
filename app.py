@@ -5,16 +5,11 @@ from PIL import Image
 
 from models import xception, efficientnet, vit
 from utils.preprocessing import transform
-from utils.gradcam import generate_gradcam
 from utils.database import insert_history
 
-# 폴더 경로
 UPLOAD_FOLDER = "uploads"
-HEATMAP_FOLDER = "static/heatmaps"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(HEATMAP_FOLDER, exist_ok=True)
 
-# 모델 가중치 설정
 WEIGHTS = {"xception": 0.4, "efficientnet": 0.3, "vit": 0.3}
 
 app = Flask(__name__)
@@ -47,13 +42,6 @@ def detect():
     label = "Fake" if final_prob > 0.5 else "Real"
     confidence = round(final_prob, 4) if label == "Fake" else round(1 - final_prob, 4)
 
-    # Heatmap 생성
-    heatmaps = {}
-    for model_name, model in [("xception", xception), ("efficientnet", efficientnet), ("vit", vit)]:
-        heatmap_path = os.path.join(HEATMAP_FOLDER, f"{filename}_{model_name}_map.png")
-        generate_gradcam(model, tensor, heatmap_path)
-        heatmaps[model_name] = heatmap_path
-
     # 예외 처리 보강
     warning = ""
     if confidence < 0.3:
@@ -77,8 +65,10 @@ def detect():
                 "xception": round(prob_xcep, 4),
                 "efficientnet": round(prob_eff, 4),
                 "vit": round(prob_vit, 4)
-            },
-            "heatmaps": heatmaps
+            }
         },
         "warning": warning
     })
+
+if __name__ == "__main__":
+    app.run(debug=True)
